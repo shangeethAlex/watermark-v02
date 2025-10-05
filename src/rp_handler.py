@@ -135,10 +135,10 @@ def base64_encode(file_path):
 # ==========================================
 # PROCESS OUTPUT FILES (MULTI-OUTPUT SUPPORT)
 # ==========================================
-def process_output_images(outputs, job_id):
+def process_output_files(outputs, job_id):
     """
     Collects all generated image/video files and returns URLs or base64 strings.
-    Supports multiple outputs (e.g., AnimateDiff_00001.mp4 and AnimateDiff_00001-audio.mp4).
+    Supports multiple outputs (images, gifs, videos, etc.)
     """
 
     COMFY_OUTPUT_PATH = os.environ.get("COMFY_OUTPUT_PATH", "/comfyui/output")
@@ -146,23 +146,25 @@ def process_output_images(outputs, job_id):
 
     output_files = []
 
-    # Gather all outputs
+    # Scan through all node outputs and detect all supported file types
     for node_id, node_output in outputs.items():
-        if "images" in node_output:
-            for img in node_output["images"]:
-                output_files.append({
-                    "type": "image",
-                    "path": os.path.join(COMFY_OUTPUT_PATH, img["subfolder"], img["filename"])
-                })
-        if "videos" in node_output:
-            for vid in node_output["videos"]:
-                output_files.append({
-                    "type": "video",
-                    "path": os.path.join(COMFY_OUTPUT_PATH, vid["subfolder"], vid["filename"])
-                })
+        print(f"🔍 Node {node_id} output keys: {list(node_output.keys())}")
+
+        for key in ["images", "gifs", "videos", "output"]:
+            if key in node_output:
+                for file_obj in node_output[key]:
+                    if "filename" not in file_obj:
+                        continue
+                    file_path = os.path.join(
+                        COMFY_OUTPUT_PATH, file_obj.get("subfolder", ""), file_obj["filename"]
+                    )
+                    output_files.append({
+                        "type": "video" if key in ["videos", "output"] else "image",
+                        "path": file_path
+                    })
 
     if not output_files:
-        print("runpod-worker-comfy - no image/video outputs found")
+        print("⚠️ No image/video outputs found")
         return {"status": "error", "message": "No image or video outputs found."}
 
     results = []
@@ -202,7 +204,7 @@ def process_output_images(outputs, job_id):
                 "data": encoded
             })
 
-    # Identify main video (audio version preferred)
+    # Identify primary video (audio version preferred)
     primary_video = None
     for f in results:
         if f["type"] == "video" and "-audio" in f["filename"]:
@@ -260,13 +262,13 @@ def handler(job):
             time.sleep(COMFY_POLLING_INTERVAL_MS / 1000)
             retries += 1
         else:
-            return {"error": "Max retries reached waiting for image generation"}
+            return {"error": "Max retries reached waiting for generation"}
     except Exception as e:
         return {"error": f"Error while waiting for generation: {str(e)}"}
 
-    # Process all outputs (images/videos)
+    # Process outputs (supports multiple formats)
     outputs = history[prompt_id].get("outputs", {})
-    result_files = process_output_images(outputs, job["id"])
+    result_files = process_output_files(outputs, job["id"])
 
     # Include refresh flag for RunPod
     return {**result_files, "refresh_worker": REFRESH_WORKER}
