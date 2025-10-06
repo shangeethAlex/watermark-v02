@@ -137,7 +137,7 @@ def base64_encode(file_path):
 # ==========================================
 def process_output_files(outputs, job_id):
     """
-    Collects all generated image/video files and returns URLs or base64 strings.
+    Collects all generated image/video files and returns S3 URLs only.
     Supports multiple outputs (images, gifs, videos, etc.)
     """
 
@@ -156,7 +156,9 @@ def process_output_files(outputs, job_id):
                     if "filename" not in file_obj:
                         continue
                     file_path = os.path.join(
-                        COMFY_OUTPUT_PATH, file_obj.get("subfolder", ""), file_obj["filename"]
+                        COMFY_OUTPUT_PATH,
+                        file_obj.get("subfolder", ""),
+                        file_obj["filename"]
                     )
                     output_files.append({
                         "type": "video" if key in ["videos", "output"] else "image",
@@ -184,7 +186,7 @@ def process_output_files(outputs, job_id):
             })
             continue
 
-        # Upload to S3 or encode as base64
+        # Always upload to S3, never use base64
         if bucket_url:
             uploaded_url = rp_upload.upload_image(job_id, local_path)
             print(f"✅ Uploaded {filename} to S3")
@@ -195,13 +197,12 @@ def process_output_files(outputs, job_id):
                 "url": uploaded_url
             })
         else:
-            encoded = base64_encode(local_path)
-            print(f"✅ Encoded {filename} to base64")
+            print(f"⚠️ No BUCKET_ENDPOINT_URL configured — skipping upload for {filename}")
             results.append({
                 "type": file_type,
                 "filename": filename,
-                "status": "base64",
-                "data": encoded
+                "status": "skipped",
+                "message": "No S3 bucket configured. File not uploaded."
             })
 
     # Identify primary video (audio version preferred)
