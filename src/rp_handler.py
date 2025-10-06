@@ -41,11 +41,11 @@ def validate_input(job_input):
     images = job_input.get("images")
     if images is not None:
         if not isinstance(images, list) or not all(
-            "name" in image and "image" in image for image in images
+            any(k in image for k in ("image", "url")) and "name" in image for image in images
         ):
             return (
                 None,
-                "'images' must be a list of objects with 'name' and 'image' keys",
+                "'images' must be a list of objects with 'name' and either 'image' (base64) or 'url'",
             )
 
     return {"workflow": workflow, "images": images}, None
@@ -71,40 +71,67 @@ def check_server(url, retries=500, delay=50):
 
 
 # ==========================================
-# IMAGE UPLOAD
+# IMAGE / VIDEO UPLOAD (Base64 or URL)
 # ==========================================
 def upload_images(images):
-    """Upload list of base64-encoded images to ComfyUI /upload/image endpoint."""
+    """Upload files (Base64 or via URL) to ComfyUI /upload/image endpoint."""
     if not images:
-        return {"status": "success", "message": "No images to upload", "details": []}
+        return {"status": "success", "message": "No input files to upload", "details": []}
 
     responses = []
     upload_errors = []
 
-    print("runpod-worker-comfy - uploading image(s)...")
+    print("runpod-worker-comfy - uploading input file(s)...")
 
     for image in images:
-        name = image["name"]
-        image_data = image["image"]
-        blob = base64.b64decode(image_data)
+        name = image.get("name")
+        blob = None
 
-        files = {
-            "image": (name, BytesIO(blob), "image/png"),
-            "overwrite": (None, "true"),
-        }
+        try:
+            # --- Case 1: URL-based upload ---
+            if "url" in image:
+                url = image["url"]
+                print(f"Downloading input from URL: {url}")
+                with requests.get(url, stream=True) as r:
+                    if r.status_code == 200:
+                        # Stream download to avoid memory overflow
+                        temp_path = f"/tmp/{name}"
+                        with open(temp_path, "wb") as f:
+                            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                                f.write(chunk)
+                        blob = open(temp_path, "rb").read()
+                    else:
+                        upload_errors.append(f"Failed to download {name}: HTTP {r.status_code}")
+                        continue
 
-        response = requests.post(f"http://{COMFY_HOST}/upload/image", files=files)
-        if response.status_code != 200:
-            upload_errors.append(f"Error uploading {name}: {response.text}")
-        else:
-            responses.append(f"Successfully uploaded {name}")
+            # --- Case 2: Base64-based upload ---
+            elif "image" in image:
+                blob = base64.b64decode(image["image"])
+
+            else:
+                upload_errors.append(f"No valid 'url' or 'image' found for {name}")
+                continue
+
+            files = {
+                "image": (name, BytesIO(blob), "application/octet-stream"),
+                "overwrite": (None, "true"),
+            }
+
+            response = requests.post(f"http://{COMFY_HOST}/upload/image", files=files)
+            if response.status_code != 200:
+                upload_errors.append(f"Error uploading {name}: {response.text}")
+            else:
+                responses.append(f"✅ Uploaded {name}")
+
+        except Exception as e:
+            upload_errors.append(f"Error processing {name}: {str(e)}")
 
     if upload_errors:
         print("runpod-worker-comfy - upload completed with errors")
-        return {"status": "error", "message": "Some images failed", "details": upload_errors}
+        return {"status": "error", "message": "Some files failed to upload", "details": upload_errors}
 
-    print("runpod-worker-comfy - all images uploaded successfully")
-    return {"status": "success", "message": "All images uploaded successfully", "details": responses}
+    print("runpod-worker-comfy - all input files uploaded successfully")
+    return {"status": "success", "message": "All inputs uploaded successfully", "details": responses}
 
 
 # ==========================================
@@ -137,7 +164,7 @@ def base64_encode(file_path):
 # ==========================================
 def process_output_files(outputs, job_id):
     """
-    Collects all generated image/video files and returns S3 URLs only.
+    Collects all generated image/video files and returns URLs or base64 strings.
     Supports multiple outputs (images, gifs, videos, etc.)
     """
 
@@ -146,7 +173,6 @@ def process_output_files(outputs, job_id):
 
     output_files = []
 
-    # Scan through all node outputs and detect all supported file types
     for node_id, node_output in outputs.items():
         print(f"🔍 Node {node_id} output keys: {list(node_output.keys())}")
 
@@ -156,9 +182,7 @@ def process_output_files(outputs, job_id):
                     if "filename" not in file_obj:
                         continue
                     file_path = os.path.join(
-                        COMFY_OUTPUT_PATH,
-                        file_obj.get("subfolder", ""),
-                        file_obj["filename"]
+                        COMFY_OUTPUT_PATH, file_obj.get("subfolder", ""), file_obj["filename"]
                     )
                     output_files.append({
                         "type": "video" if key in ["videos", "output"] else "image",
@@ -186,7 +210,7 @@ def process_output_files(outputs, job_id):
             })
             continue
 
-        # Always upload to S3, never use base64
+        # Upload to S3 or encode as base64
         if bucket_url:
             uploaded_url = rp_upload.upload_image(job_id, local_path)
             print(f"✅ Uploaded {filename} to S3")
@@ -197,12 +221,13 @@ def process_output_files(outputs, job_id):
                 "url": uploaded_url
             })
         else:
-            print(f"⚠️ No BUCKET_ENDPOINT_URL configured — skipping upload for {filename}")
+            encoded = base64_encode(local_path)
+            print(f"✅ Encoded {filename} to base64")
             results.append({
                 "type": file_type,
                 "filename": filename,
-                "status": "skipped",
-                "message": "No S3 bucket configured. File not uploaded."
+                "status": "base64",
+                "data": encoded
             })
 
     # Identify primary video (audio version preferred)
@@ -239,7 +264,7 @@ def handler(job):
                  COMFY_API_AVAILABLE_MAX_RETRIES,
                  COMFY_API_AVAILABLE_INTERVAL_MS)
 
-    # Upload input images if provided
+    # Upload input images/videos (Base64 or via URL)
     upload_result = upload_images(images)
     if upload_result["status"] == "error":
         return upload_result
