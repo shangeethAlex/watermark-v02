@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y \
 # ================================
 RUN pip install --upgrade pip setuptools wheel
 
-# ✅ Install CUDA-compatible PyTorch stack (built for CUDA 11.8)
+# ✅ Install CUDA-compatible PyTorch stack
 RUN pip install torch==2.2.0+cu118 torchvision==0.17.0+cu118 torchaudio==2.2.0 \
     --index-url https://download.pytorch.org/whl/cu118
 
@@ -42,7 +42,6 @@ RUN pip install runpod requests opencv-contrib-python==4.8.1.78
 # ================================
 RUN pip install comfy-cli && /usr/bin/yes | comfy --workspace /comfyui install --cuda-version 11.8 --nvidia
 
-# Set working directory
 WORKDIR /comfyui
 
 # ================================
@@ -56,15 +55,13 @@ ADD src/extra_model_paths.yaml ./
 WORKDIR /
 ADD src/start.sh src/restore_snapshot.sh src/rp_handler.py test_input.json ./
 RUN chmod +x /start.sh /restore_snapshot.sh
-
-# Optional snapshot for custom nodes
-ADD *snapshot*.json / 
+ADD *snapshot*.json /  # optional snapshot for custom nodes
 RUN /restore_snapshot.sh || true
 
 # ================================
 # Environment Fixes
 # ================================
-# Ensure CUDA libraries resolve properly
+# Ensures CUDA libraries resolve properly
 ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 ENV PATH=/usr/local/cuda/bin:$PATH
 
@@ -72,12 +69,6 @@ ENV PATH=/usr/local/cuda/bin:$PATH
 ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ENV HF_HUB_DISABLE_TELEMETRY=1
 ENV TORCH_CUDNN_V8_API_ENABLED=1
-
-# ================================
-# Healthcheck (optional but recommended)
-# Restarts container if ComfyUI API is unresponsive for >30s
-# ================================
-HEALTHCHECK --interval=60s --timeout=30s --retries=3 CMD curl -fs http://127.0.0.1:8188/api/system || exit 1
 
 # ================================
 # Start container
