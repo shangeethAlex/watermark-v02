@@ -42,20 +42,16 @@ RUN /usr/bin/yes | comfy --workspace /comfyui install --cuda-version 11.8 --nvid
 WORKDIR /comfyui
 
 # ============================
-# Fix bitsandbytes - compile from source for CUDA 11.8
+# Fix bitsandbytes - use compatible pre-built version
 # ============================
-# The issue is PyTorch 2.8.0 reports CUDA 12.8, but container has CUDA 11.8
-# We need to force bitsandbytes to compile for CUDA 11.8
+# Use a version that has pre-compiled CUDA 11.8 binaries
 RUN pip uninstall -y bitsandbytes && \
-    git clone https://github.com/TimDettmers/bitsandbytes.git /tmp/bitsandbytes && \
-    cd /tmp/bitsandbytes && \
-    CUDA_VERSION=118 make cuda11x && \
-    python setup.py install && \
-    cd / && rm -rf /tmp/bitsandbytes
+    pip install bitsandbytes==0.41.3 --no-cache-dir
 
-# Alternative: Use pre-built wheels for CUDA 11.8
-# RUN pip uninstall -y bitsandbytes && \
-#     pip install bitsandbytes==0.41.1 --no-cache-dir
+# Set environment variables to help bitsandbytes find CUDA libraries
+ENV BNB_CUDA_VERSION=118
+ENV LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+ENV CUDA_HOME=/usr/local/cuda-11.8
 
 # ============================
 # Fix opencv-contrib-python for LayerStyle nodes
@@ -90,9 +86,6 @@ RUN pip install --upgrade comfyui-frontend
 # ============================
 ENV TORCH_CUDA_ARCH_LIST="8.9"
 ENV CUDA_LAUNCH_BLOCKING=0
-# Force CUDA 11.8 for bitsandbytes
-ENV BNB_CUDA_VERSION=118
-ENV LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
 
 # ============================
 # Go back to the root and add scripts
@@ -110,12 +103,6 @@ ADD *snapshot*.json /
 
 # Restore snapshot to install custom nodes (ignore errors if no snapshot)
 RUN /restore_snapshot.sh || true
-
-# ============================
-# Verify installations
-# ============================
-RUN python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')" && \
-    python -c "import bitsandbytes as bnb; print(f'bitsandbytes: {bnb.__version__}')" || echo "bitsandbytes check completed"
 
 # ============================
 # Container start command
