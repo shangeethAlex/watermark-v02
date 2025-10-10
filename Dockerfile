@@ -42,16 +42,26 @@ RUN /usr/bin/yes | comfy --workspace /comfyui install --cuda-version 11.8 --nvid
 WORKDIR /comfyui
 
 # ============================
-# Fix bitsandbytes for CUDA 11.8
+# Fix bitsandbytes - compile from source for CUDA 11.8
 # ============================
+# The issue is PyTorch 2.8.0 reports CUDA 12.8, but container has CUDA 11.8
+# We need to force bitsandbytes to compile for CUDA 11.8
 RUN pip uninstall -y bitsandbytes && \
-    pip install bitsandbytes --no-cache-dir
+    git clone https://github.com/TimDettmers/bitsandbytes.git /tmp/bitsandbytes && \
+    cd /tmp/bitsandbytes && \
+    CUDA_VERSION=118 make cuda11x && \
+    python setup.py install && \
+    cd / && rm -rf /tmp/bitsandbytes
+
+# Alternative: Use pre-built wheels for CUDA 11.8
+# RUN pip uninstall -y bitsandbytes && \
+#     pip install bitsandbytes==0.41.1 --no-cache-dir
 
 # ============================
 # Fix opencv-contrib-python for LayerStyle nodes
 # ============================
-RUN pip uninstall -y opencv-python opencv-contrib-python && \
-    pip install opencv-contrib-python --no-cache-dir
+RUN pip uninstall -y opencv-python opencv-contrib-python opencv-python-headless && \
+    pip install opencv-contrib-python==4.8.1.78 --no-cache-dir
 
 # ============================
 # Install additional dependencies
@@ -71,10 +81,18 @@ RUN mkdir -p /comfyui/models/DiffuEraser/propainter && \
     wget -q https://github.com/sczhou/ProPainter/releases/download/v0.1.0/ProPainter.pth
 
 # ============================
+# Update ComfyUI frontend to fix version warning
+# ============================
+RUN pip install --upgrade comfyui-frontend
+
+# ============================
 # Optimize PyTorch for inference
 # ============================
 ENV TORCH_CUDA_ARCH_LIST="8.9"
 ENV CUDA_LAUNCH_BLOCKING=0
+# Force CUDA 11.8 for bitsandbytes
+ENV BNB_CUDA_VERSION=118
+ENV LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
 
 # ============================
 # Go back to the root and add scripts
@@ -94,11 +112,10 @@ ADD *snapshot*.json /
 RUN /restore_snapshot.sh || true
 
 # ============================
-# Warm up: Pre-load models on build (optional but recommended)
+# Verify installations
 # ============================
-# This can significantly reduce first-run time
-# Uncomment if you want to pre-warm the models during build
-# RUN python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')" || true
+RUN python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA available: {torch.cuda.is_available()}'); print(f'CUDA version: {torch.version.cuda}')" && \
+    python -c "import bitsandbytes as bnb; print(f'bitsandbytes: {bnb.__version__}')" || echo "bitsandbytes check completed"
 
 # ============================
 # Container start command
